@@ -228,9 +228,16 @@ def strip_redundant_emails(value, email_values):
     stripped = EMPTY_PAREN_RE.sub('', stripped)
     return stripped
 
-def email_token_forms(email_values):
-    """Order-independent token forms of the e-mail values in email_values."""
-    return {normalize_content(e) for e in email_values}
+def email_token_forms(lines):
+    """Order-independent token forms of every EMAIL value in the lines.
+
+    The whole value is tokenized, not just the part EMAIL_RE recognizes, so
+    that e-mails with non-ASCII letters (spícefrankfurt@yahoo.de) still match
+    an N built from the same pieces.
+    """
+    return {normalize_content(line.split(":", 1)[1])
+            for line in lines
+            if get_property(line) == "EMAIL" and "@" in line}
 
 def is_n_only_split_email(n_val, email_tokens):
     """True if N holds nothing but the pieces of an e-mail that a name parser
@@ -300,9 +307,9 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
     8. Additionally, if N contains address info that matches ADR, remove N.
     9. If N holds nothing but a phone number that matches a TEL value, remove N.
     10. If N holds an e-mail that matches an EMAIL value, remove that e-mail from
-        N (and the whole N line when nothing but the e-mail remains in it). This
-        also covers e-mails a name parser split into N's sub-fields, e.g.
-        'de;info@example;;;' for the EMAIL 'info@example.de'.
+        N (and the whole N line when nothing but the e-mail remains in it); the
+        e-mail may also have been split into N's sub-fields by a name parser,
+        e.g. 'de;info@example;;;' for the EMAIL 'info@example.de'.
 
     Deduplication logic:
     Perform line-level deduplication (enabled by the dedup flag).
@@ -347,7 +354,7 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
                 remove_n = True
             else:
                 n_new_val = cleaned
-        elif is_n_only_split_email(n_val, email_token_forms(email_values)):
+        elif is_n_only_split_email(n_val, email_token_forms(lines)):
             remove_n = True
 
     new_lines = apply_changes(lines, fields, replace_fn, remove_n, strip_inv,

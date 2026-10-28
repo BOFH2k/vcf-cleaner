@@ -102,6 +102,16 @@ class ImprovementRegressionTests(unittest.TestCase):
         )
         self.assertEqual(vcf_cleaner.transform_vcard_content(content), content)
 
+    def test_n_split_email_matching_ignores_non_ascii_letters(self):
+        content = (
+            "BEGIN:VCARD\nFN:Sample\nORG:Sample Org\n"
+            "EMAIL:nöme@example.de\n"
+            "N:de;nöme@example;;;\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content)
+        self.assertNotIn("N:de;", transformed)
+        self.assertIn("EMAIL:nöme@example.de", transformed)
+
     def test_file_processing_error_sets_nonzero_command_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
