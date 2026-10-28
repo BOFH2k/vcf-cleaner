@@ -8,7 +8,6 @@ INVISIBLE_RE = re.compile(r'[\u200b\u200c\u200d\u2060\ufeff]')
 EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 NONPHONE_RE = re.compile(r'[^\d+]')
 PHONE_RE = re.compile(r'^\+?\d+$')
-NONSEP_RE = re.compile(r'[^a-zA-Z0-9]')
 WS_RE = re.compile(r'\s+')
 
 def normalize_phone(text):
@@ -21,21 +20,25 @@ def normalize_phone(text):
     return NONPHONE_RE.sub('', text)
 
 def normalize_content(text):
-    """
-    Removes all non-alphanumeric characters, lowercases the text, and sorts the characters.
-    Used for general redundancy checks (e.g., addresses) where order might differ.
+    """Normalize alphanumeric tokens for order-independent address comparison.
+
+    Sorting whole tokens allows harmless word-order and punctuation differences
+    without making unrelated strings such as ``ABC 123`` and ``321 CBA`` equal.
     """
     if not text:
-        return ""
-    return "".join(sorted(NONSEP_RE.sub('', text).lower()))
+        return ()
+    return tuple(sorted(re.findall(r'[a-zA-Z0-9]+', text.lower())))
 
 def get_property(line):
-    """Returns the property name of a VCard line (text before ';' or ':'), or None.
-    Example: 'ORG;CHARSET=UTF-8:Foo' -> 'ORG'
+    """Return a case-normalized vCard property name, or None.
+
+    Property names are case-insensitive. A group prefix (for example,
+    ``item1.FN``) is not part of the property name.
     """
     if ":" not in line:
         return None
-    return line.split(":", 1)[0].split(";", 1)[0]
+    name = line.split(":", 1)[0].split(";", 1)[0]
+    return name.rsplit(".", 1)[-1].upper()
 
 def strip_invisible(text):
     """
@@ -141,7 +144,7 @@ def precompute_other(lines, fn_idx, need_phones=True, need_contents=True, need_e
     FN (need_* flag False) are left empty and never built.
     Returns (phones, contents, emails):
     - phones:   set of normalize_phone(line)
-    - contents: set of normalize_content(value) of every line with a ':'
+    - contents: set of normalized token tuples for every line with a ':'
     - emails:   set of lowercased e-mails found in any line
     """
     phones = set()
@@ -191,7 +194,21 @@ def is_n_redundant_with_adr(n_val, adr_val):
     if not is_address_format:
         return False
     n_norm = normalize_content(n_val)
-    return n_norm != "" and n_norm == normalize_content(adr_val)
+    return bool(n_norm) and n_norm == normalize_content(adr_val)
+
+def is_n_redundant_with_tel(n_val, tel_phones):
+    """True if N holds only a phone number (no letters, e.g. ';+49123;;;')
+    whose normalized form matches one of the TEL values (tel_phones set).
+    An N with letters is a real name and never removed by this rule."""
+    if not n_val or not tel_phones or any(c.isalpha() for c in n_val):
+        return False
+    n_norm = phone_like(n_val)
+    return n_norm is not None and n_norm in tel_phones
+
+def tel_phone_forms(lines):
+    """Normalized phone forms of every TEL value in the lines."""
+    return {normalize_phone(line.split(":", 1)[1])
+            for line in lines if get_property(line) == "TEL"}
 
 def extract_fn_value(vcard_text):
     """Returns the FN value of a vCard (unfolded), for dry-run display."""
@@ -212,7 +229,9 @@ def apply_changes(lines, fields, replace_fn, remove_n, strip_inv):
         if i == fn_idx:
             if replace_fn:
                 org_val = fields["ORG"][1]
-                new_lines.append(f"FN:{collapse_spaces(org_val, strip_inv=strip_inv)}")
+                prop_part = line.split(":", 1)[0]
+                new_lines.append(
+                    f"{prop_part}:{collapse_spaces(org_val, strip_inv=strip_inv)}")
             else:
                 prop_part = line.split(":", 1)[0]
                 fn_value = collapse_spaces(line.split(":", 1)[1], strip_inv=strip_inv) if ":" in line else ""
@@ -237,6 +256,7 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
     6. If yes: Replace FN with ORG.
     7. Is FN an e-mail address? If that address exists elsewhere in the vCard: Replace FN with ORG.
     8. Additionally, if N contains address info that matches ADR, remove N.
+    9. If N holds nothing but a phone number that matches a TEL value, remove N.
 
     Deduplication logic:
     Perform line-level deduplication (enabled by the dedup flag).
@@ -265,6 +285,10 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
             replace_fn = redundant and bool(fields["ORG"][1])
 
     remove_n = is_n_redundant_with_adr(fields["N"][1], fields["ADR"][1])
+    if not remove_n and phone_like(fields["N"][1]) is not None:
+        # only collect TEL forms when N is phone-like at all, so files whose
+        # N holds a real name pay nothing
+        remove_n = is_n_redundant_with_tel(fields["N"][1], tel_phone_forms(lines))
 
     new_lines = apply_changes(lines, fields, replace_fn, remove_n, strip_inv)
 
@@ -276,7 +300,7 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
 
 def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup):
     """Reads one .vcf file, transforms it and (unless dry_run) writes it out.
-    Returns (changed, report_lines) where report_lines describe the change."""
+    Returns (changed, report_lines, failed)."""
     try:
         with open(source_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -284,7 +308,7 @@ def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup):
         transformed_content = transform_vcard_content(content, strip_inv=strip_inv, dedup=dedup)
 
         if transformed_content == content:
-            return False, []
+            return False, [], False
 
         if dry_run:
             old_fn = extract_fn_value(content)
@@ -304,39 +328,45 @@ def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup):
                 report.append("         [Deduplication applied]")
             if not fn_changed and not dedup_happened:
                 report.append("         [Line re-wrapping applied]")
-            return True, report
+            return True, report, False
 
         with open(dest_path, 'w', encoding='utf-8', newline='\r\n') as f:
             f.write(transformed_content)
-        return True, []
+        return True, [], False
 
     except Exception as e:
-        return False, [f"Error with file {filename}: {e}"]
+        return False, [f"Error with file {filename}: {e}"], True
 
 def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_inv=True, dedup=True, workers=None):
+    """Process a folder and return False if setup or any file processing fails."""
     if dry_run:
         print("="*60)
         print("!!! DRY RUN MODE ACTIVE: NO files will be written !!!")
         print("="*60 + "\n")
-    else:
-        if not os.path.exists(destination_folder):
-            os.makedirs(destination_folder)
-            print(f"Directory '{destination_folder}' has been created.")
-
-    count_total = 0
-    count_transformed = 0
 
     try:
         filenames = sorted([f for f in os.listdir(source_folder) if f.lower().endswith(".vcf")])
-    except FileNotFoundError:
-        print(f"Error: The directory '{source_folder}' does not exist.")
-        return
+    except OSError as e:
+        print(f"Error: Cannot read input directory '{source_folder}': {e}")
+        return False
 
     if not filenames:
         print(f"No .vcf files found in '{source_folder}'.")
-        return
+        return True
+
+    if not dry_run:
+        destination_existed = os.path.exists(destination_folder)
+        try:
+            os.makedirs(destination_folder, exist_ok=True)
+        except OSError as e:
+            print(f"Error: Cannot create output directory '{destination_folder}': {e}")
+            return False
+        if not destination_existed:
+            print(f"Directory '{destination_folder}' has been created.")
 
     count_total = len(filenames)
+    count_transformed = 0
+    count_failed = 0
     tasks = [(filename,
               os.path.join(source_folder, filename),
               os.path.join(destination_folder, filename))
@@ -360,26 +390,31 @@ def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_
     else:
         results = [process_one(t[0], t[1], t[2], dry_run, strip_inv, dedup) for t in tasks]
 
-    for changed, report in results:
+    for changed, report, failed in results:
         for line in report:
             print(line)
         if changed:
             count_transformed += 1
+        if failed:
+            count_failed += 1
 
     print("\n" + "="*60)
     if dry_run:
         print("DRY RUN RESULTS:")
         print(f"Found .vcf files:          {count_total}")
         print(f"Files that would be changed: {count_transformed}")
+        print(f"Files that failed:          {count_failed}")
     else:
         print("PROCESSING COMPLETE:")
         print(f"Total files processed:       {count_total}")
         print(f"Files saved in destination:   {count_transformed}")
+        print(f"Files that failed:            {count_failed}")
         if count_transformed > 0:
             print(f"Results are located in:     {os.path.abspath(destination_folder)}")
         else:
             print("Note: No files needed to be changed.")
     print("="*60)
+    return count_failed == 0
 
 def main():
     parser = argparse.ArgumentParser(description="vCard clean & fix: Replaces FN with ORG if FN is content that appears redundantly in other fields.")
@@ -396,9 +431,11 @@ def main():
     args = parser.parse_args()
     if args.workers is not None and args.workers < 1:
         parser.error("--workers must be at least 1")
-    batch_process_vcards(args.input, args.output, dry_run=args.dry_run,
-                         strip_inv=args.strip_invisible, dedup=args.dedup,
-                         workers=args.workers)
+    success = batch_process_vcards(args.input, args.output, dry_run=args.dry_run,
+                                   strip_inv=args.strip_invisible, dedup=args.dedup,
+                                   workers=args.workers)
+    if not success:
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()
