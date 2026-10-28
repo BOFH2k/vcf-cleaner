@@ -28,6 +28,9 @@ python vcf-cleaner.py <input_dir> <output_dir> [options]
 ### Options
 
 - `-d`, `--dry-run`: Performs a simulation. It will print which files would be changed and show the transformation (e.g., `FN: 'old' --> 'new'`) without writing any actual files to disk.
+- `--[no-]strip-invisible` (default: on): Remove zero-width/invisible characters (e.g. U+200B ZWSP, BOM) that render like extra spaces. Disable with `--no-strip-invisible` to keep them.
+- `--[no-]dedup` (default: on): Remove duplicate lines. Disable with `--no-dedup` to keep them.
+- `--workers N` (default: 1): Process files in parallel with up to N threads. Only helps on very large inputs; per-file work is tiny and CPU-bound, so threading is opt-in.
 
 ### Example
 
