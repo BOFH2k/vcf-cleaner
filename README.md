@@ -108,3 +108,5 @@ The tests that exercise the `vobject` and `icalendar` tiers are skipped when tho
 ```bash
 .venv/bin/python -m unittest discover -s test -v
 ```
+
+This `.venv` is your own environment and is the only one these instructions describe. A coding agent working in this repository keeps its own, separate environment in `.venv-opencode`; the two are never shared, so please do not point one at the other or reuse it.
