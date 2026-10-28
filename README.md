@@ -16,11 +16,18 @@ A simple Python utility to clean VCard (`.vcf`) files by replacing the `FN` (Ful
 - **Safe Execution**: `--dry-run` previews changes without writing anything, and reports per file whether `FN` was changed, deduplication was applied, or only line re-wrapping was applied.
 - **Failure reporting**: unreadable or unwritable files are reported individually, counted in the summary, and make the command exit with a non-zero status.
 - **Parallel processing**: opt-in `--workers` speeds up large directories.
-- **Zero Dependencies**: Uses only the Python standard library.
+- **Zero Dependencies**: Uses only the Python standard library. Validation is the only exception, and it degrades gracefully when the optional checker library is missing (see [Validating the output](#validating-the-output)).
 
 ## Installation
 
 No installation is required. Simply ensure you have Python 3 installed.
+
+The optional `--validate` checker is the only part that is not standard library. It is kept out of the script's own imports and installed separately, in a [uv](https://docs.astral.sh/uv/)-managed virtual environment, so the cleaner itself never depends on it:
+
+```bash
+uv venv .venv --python 3.14
+uv pip install --python .venv vobject
+```
 
 ## Usage
 
@@ -41,6 +48,31 @@ python vcf-cleaner.py <input_dir> <output_dir> [options]
 - `--[no-]strip-invisible` (default: on): Remove zero-width/invisible characters (e.g. U+200B ZWSP, BOM) that render like extra spaces. Disable with `--no-strip-invisible` to keep them.
 - `--[no-]dedup` (default: on): Remove duplicate lines. Disable with `--no-dedup` to keep them.
 - `--workers N` (default: 1): Process files in parallel with up to N threads. Only helps on very large inputs; per-file work is tiny and CPU-bound, so threading is opt-in.
+- `--validate` (default: off): Check each resulting vCard and print the invalid ones under `[INVALID OUTPUT] <file>`, with one indented reason per problem, plus a `Files with invalid output:` count in the summary. Works in a dry run too (it checks what would be written). Needs the `vobject` library; run it with the interpreter that has it (see below).
+- `--validate-ical` (default: off): Also ask [icalendar](https://pypi.org/project/icalendar/), which is stricter than VCard 3.0 — it insists that `N` and `ADR` carry their full sub-field counts and that a file holds a single card — so it can flag cards that a VCard 3.0 reader accepts. It is an extra tier, not the gate, and requires `--validate`.
+
+### Validating the output
+
+`--validate` layers the checks it can run on top of each other:
+
+1. **Structural rules that need no library** (always on): physical lines stay within 75 bytes, line endings are plain CRLF pairs, every content line is a `NAME[;params]:value` property (or a continuation) with a VCard-legal name, only printable characters and legal escapes, parameter quotes are closed, and `BEGIN:`/`END:` markers are paired. It also reports more than one `FN` in a card.
+2. **`vobject` as a second tier**, which adds value-level checks (for example an unterminated parameter quote in a property header).
+3. **`icalendar` as an opt-in third tier** with `--validate-ical`, as described above.
+
+Run it with the interpreter that can import the checker — either the venv you bootstrapped above, or in one go with `uv run`:
+
+```bash
+.venv/bin/python vcf-cleaner.py ./contacts_raw ./contacts_cleaned --validate
+uv run --with vobject vcf-cleaner.py ./contacts_raw ./contacts_cleaned --validate
+```
+
+If you ask for `--validate` on an interpreter that cannot import `vobject`, the command does not quietly skip the check: it prints the exact setup instructions and exits with status `1`. The validation function itself keeps the library import optional, so calling it from another script on a plain interpreter still runs every rule that needs no dependency.
+
+### Exit codes
+
+- `0`: the run completed and nothing was wrong.
+- `1`: the run itself failed (unreadable input directory, a file that could not be processed, or `--validate` requested without its library).
+- `2`: at least one resulting vCard was reported invalid. This is a distinct status so a caller can tell "the run broke" from "the output is not a valid vCard".
 
 ### Example
 
@@ -54,6 +86,11 @@ python vcf-cleaner.py ./contacts_raw ./contacts_cleaned --dry-run
 python vcf-cleaner.py ./contacts_raw ./contacts_cleaned
 ```
 
+**Process and check the result:**
+```bash
+.venv/bin/python vcf-cleaner.py ./contacts_raw ./contacts_cleaned --validate
+```
+
 ## License
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
@@ -64,4 +101,10 @@ Run the standard-library test suite from the repository root:
 
 ```bash
 python -m unittest discover -s test -v
+```
+
+The tests that exercise the `vobject` and `icalendar` tiers are skipped when those libraries are not importable. Run them a second time with the venv interpreter to cover that code as well:
+
+```bash
+.venv/bin/python -m unittest discover -s test -v
 ```

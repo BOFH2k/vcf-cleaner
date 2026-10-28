@@ -1,6 +1,7 @@
 import re
 import os
 import argparse
+import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 
 MAX_LINE_BYTES = 75
@@ -366,9 +367,127 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
     folded = [physical for line in new_lines for physical in fold_line(line)]
     return "\n".join(folded)
 
-def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup):
+PROPERTY_NAME_RE = re.compile(r'[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*)*')
+CONTROL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+VALID_ESCAPES = 'nN,;:\\'
+
+VALIDATION_BOOTSTRAP = """Error: --validate needs a third-party parsing library that this
+interpreter cannot import. The script itself stays standard-library only; the
+checker lives in a uv-managed venv instead:
+
+    uv venv .venv --python 3.14
+    uv pip install --python .venv vobject
+    .venv/bin/python vcf-cleaner.py IN OUT --validate
+
+or run it in one go:
+
+    uv run --with vobject vcf-cleaner.py IN OUT --validate
+"""
+
+def validate_vcard(text, validate_ical=False):
+    """Returns a list of human-readable reasons why a written vCard is invalid.
+
+    An empty list means nothing found a problem. The checks that need no
+    third-party library always run: physical lines stay within MAX_LINE_BYTES,
+    line endings are CRLF pairs, BEGIN/END markers are paired, and every
+    content line is a 'NAME[;params]:value' property (or a continuation) with a
+    VCard-legal name, printable characters and only legal escape sequences.
+    When vobject is importable it is asked as a second tier, which adds value
+    level checks such as an unterminated parameter quote. validate_ical
+    additionally asks icalendar, which is stricter than VCard 3.0 (it insists
+    that N and ADR carry their full subfield counts and that a file hold a
+    single card), so it can flag cards that VCard 3.0 readers accept; it is an
+    opt-in extra tier, not the gate.
+    """
+    problems = []
+
+    if '\r' in text.replace('\r\n', '') or '\n' in text.replace('\r\n', ''):
+        problems.append("line endings are not plain CRLF pairs")
+    physical = text.split('\r\n')
+    stack = []
+    fn_count = 0
+    seen_property = False
+    for i, line in enumerate(physical):
+        size = len(line.encode('utf-8'))
+        if size > MAX_LINE_BYTES:
+            problems.append(f"physical line {i + 1} is {size} bytes "
+                            f"(over {MAX_LINE_BYTES})")
+            continue
+        if not line:
+            continue
+        if line[:1] in (' ', '\t'):
+            if not seen_property:
+                problems.append(f"physical line {i + 1} continues a line that "
+                                f"does not exist")
+            continue
+        seen_property = True
+        if ':' not in line:
+            problems.append(f"physical line {i + 1} is not a property line "
+                            f"(no ':')")
+            continue
+        head = line.split(':', 1)[0]
+        name = head.split(';', 1)[0]
+        if PROPERTY_NAME_RE.fullmatch(name) is None:
+            problems.append(f"physical line {i + 1} has no VCard-legal property "
+                            f"name")
+            continue
+        if CONTROL_RE.search(line):
+            problems.append(f"physical line {i + 1} holds a control character")
+        if head.count('"') % 2:
+            problems.append(f"physical line {i + 1} opens a parameter quote "
+                            f"that it never closes")
+        for m in re.finditer(r'\\.', line):
+            if m.group()[1] not in VALID_ESCAPES:
+                problems.append(f"physical line {i + 1} escapes an unsupported "
+                                f"character")
+                break
+        prop = get_property(line)
+        if prop == 'BEGIN':
+            stack.append(line.split(':', 1)[1].strip().upper())
+        elif prop == 'END':
+            want = line.split(':', 1)[1].strip().upper()
+            if not stack or stack[-1] != want:
+                problems.append(f"physical line {i + 1} ends a group that was "
+                                f"never opened")
+            else:
+                stack.pop()
+        elif prop == 'FN':
+            fn_count += 1
+    if stack:
+        problems.append("a BEGIN: marker is never matched by its END: marker")
+    if fn_count > 1:
+        problems.append(f"FN appears {fn_count} times in one card")
+
+    # vobject tier: importable only when the checker was installed (see
+    # VALIDATION_BOOTSTRAP); a missing library is reported up front by main()
+    try:
+        import vobject
+    except ImportError:
+        pass
+    else:
+        try:
+            vobject.readOne(text)
+        except Exception as e:
+            problems.append(f"vobject rejects it: {type(e).__name__}: {e}")
+
+    if validate_ical:
+        try:
+            import icalendar
+        except ImportError:
+            pass
+        else:
+            try:
+                icalendar.Calendar.from_ical(text.encode('utf-8'))
+            except Exception as e:
+                problems.append(f"icalendar rejects it: {type(e).__name__}: {e}")
+
+    return problems
+
+def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup,
+                validate=False, validate_ical=False):
     """Reads one .vcf file, transforms it and (unless dry_run) writes it out.
-    Returns (changed, report_lines, failed)."""
+    With validate it also checks the resulting vCard (see validate_vcard).
+    Returns (changed, report_lines, failed, invalid)."""
     try:
         with open(source_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -376,7 +495,20 @@ def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup):
         transformed_content = transform_vcard_content(content, strip_inv=strip_inv, dedup=dedup)
 
         if transformed_content == content:
-            return False, [], False
+            return False, [], False, False
+
+        invalid_report = []
+        if validate:
+            # what lands on disk is the CRLF form of the transform output
+            problems = validate_vcard(transformed_content.replace('\n', '\r\n'),
+                                      validate_ical)
+            if problems:
+                invalid_report = [f"[INVALID OUTPUT] {filename}"]
+                invalid_report += [f"         {p}" for p in problems]
+                if dry_run:
+                    return True, invalid_report, False, True
+                # a real run still writes the file: the change was asked for,
+                # and silently dropping it would hide the problem
 
         if dry_run:
             old_fn = extract_fn_value(content)
@@ -396,17 +528,22 @@ def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup):
                 report.append("         [Deduplication applied]")
             if not fn_changed and not dedup_happened:
                 report.append("         [Line re-wrapping applied]")
-            return True, report, False
+            return True, report, False, False
 
         with open(dest_path, 'w', encoding='utf-8', newline='\r\n') as f:
             f.write(transformed_content)
-        return True, [], False
+        return True, invalid_report, False, bool(invalid_report)
 
     except Exception as e:
-        return False, [f"Error with file {filename}: {e}"], True
+        return False, [f"Error with file {filename}: {e}"], True, False
 
-def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_inv=True, dedup=True, workers=None):
-    """Process a folder and return False if setup or any file processing fails."""
+def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_inv=True, dedup=True, workers=None, validate=False, validate_ical=False):
+    """Process a folder and return (ok, invalid_outputs).
+
+    ok is False if setup or any file processing fails; invalid_outputs counts
+    the written (or, in a dry run, the would-be written) vCards that
+    validate_vcard found problems with.
+    """
     if dry_run:
         print("="*60)
         print("!!! DRY RUN MODE ACTIVE: NO files will be written !!!")
@@ -416,11 +553,11 @@ def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_
         filenames = sorted([f for f in os.listdir(source_folder) if f.lower().endswith(".vcf")])
     except OSError as e:
         print(f"Error: Cannot read input directory '{source_folder}': {e}")
-        return False
+        return False, 0
 
     if not filenames:
         print(f"No .vcf files found in '{source_folder}'.")
-        return True
+        return True, 0
 
     if not dry_run:
         destination_existed = os.path.exists(destination_folder)
@@ -428,13 +565,14 @@ def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_
             os.makedirs(destination_folder, exist_ok=True)
         except OSError as e:
             print(f"Error: Cannot create output directory '{destination_folder}': {e}")
-            return False
+            return False, 0
         if not destination_existed:
             print(f"Directory '{destination_folder}' has been created.")
 
     count_total = len(filenames)
     count_transformed = 0
     count_failed = 0
+    count_invalid = 0
     tasks = [(filename,
               os.path.join(source_folder, filename),
               os.path.join(destination_folder, filename))
@@ -453,18 +591,22 @@ def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_
         batches = [tasks[i:i + chunk] for i in range(0, count_total, chunk)]
         with ThreadPoolExecutor(max_workers=workers) as executor:
             results = [r for batch in executor.map(
-                lambda batch: [process_one(*t, dry_run, strip_inv, dedup)
+                lambda batch: [process_one(*t, dry_run, strip_inv, dedup,
+                                           validate, validate_ical)
                                for t in batch], batches) for r in batch]
     else:
-        results = [process_one(t[0], t[1], t[2], dry_run, strip_inv, dedup) for t in tasks]
+        results = [process_one(t[0], t[1], t[2], dry_run, strip_inv, dedup,
+                                validate, validate_ical) for t in tasks]
 
-    for changed, report, failed in results:
+    for changed, report, failed, invalid in results:
         for line in report:
             print(line)
         if changed:
             count_transformed += 1
         if failed:
             count_failed += 1
+        if invalid:
+            count_invalid += 1
 
     print("\n" + "="*60)
     if dry_run:
@@ -472,17 +614,21 @@ def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_
         print(f"Found .vcf files:          {count_total}")
         print(f"Files that would be changed: {count_transformed}")
         print(f"Files that failed:          {count_failed}")
+        if validate:
+            print(f"Files with invalid output:  {count_invalid}")
     else:
         print("PROCESSING COMPLETE:")
         print(f"Total files processed:       {count_total}")
         print(f"Files saved in destination:   {count_transformed}")
         print(f"Files that failed:            {count_failed}")
+        if validate:
+            print(f"Files with invalid output:    {count_invalid}")
         if count_transformed > 0:
             print(f"Results are located in:     {os.path.abspath(destination_folder)}")
         else:
             print("Note: No files needed to be changed.")
     print("="*60)
-    return count_failed == 0
+    return count_failed == 0, count_invalid
 
 def main():
     parser = argparse.ArgumentParser(description="vCard clean & fix: Replaces FN with ORG if FN is content that appears redundantly in other fields.")
@@ -496,14 +642,43 @@ def main():
     parser.add_argument("--workers", type=int, default=None,
                         help="Files to process in parallel; 1 disables threading "
                              "(default: 1; try e.g. 2-4x CPU count for large inputs)")
+    parser.add_argument("--validate", action=argparse.BooleanOptionalAction, default=False,
+                        help="Check the resulting vCards and report the invalid ones "
+                             "(default: off; the structural rules need no dependency, "
+                             "vobject adds value-level checks -- if it is missing the "
+                             "command fails and prints how to install it, see README)")
+    parser.add_argument("--validate-ical", action=argparse.BooleanOptionalAction, default=False,
+                        help="Additionally ask icalendar when validating; it is stricter "
+                             "than VCard 3.0 and can flag cards a 3.0 reader accepts "
+                             "(default: off)")
     args = parser.parse_args()
     if args.workers is not None and args.workers < 1:
         parser.error("--workers must be at least 1")
-    success = batch_process_vcards(args.input, args.output, dry_run=args.dry_run,
-                                   strip_inv=args.strip_invisible, dedup=args.dedup,
-                                   workers=args.workers)
+    if args.validate_ical and not args.validate:
+        parser.error("--validate-ical only makes sense together with --validate")
+
+    if args.validate:
+        # the checker libraries are optional: the script is standard-library only
+        # and degrades to its own structural rules when they are missing, but an
+        # explicitly requested --validate without them would silently under-report
+        needed = ["vobject"] + (["icalendar"] if args.validate_ical else [])
+        missing = [name for name in needed if importlib.util.find_spec(name) is None]
+        if missing:
+            print(VALIDATION_BOOTSTRAP)
+            print(f"Missing: {', '.join(missing)}")
+            raise SystemExit(1)
+
+    success, invalid_outputs = batch_process_vcards(
+        args.input, args.output, dry_run=args.dry_run,
+        strip_inv=args.strip_invisible, dedup=args.dedup,
+        workers=args.workers, validate=args.validate,
+        validate_ical=args.validate_ical)
     if not success:
         raise SystemExit(1)
+    if invalid_outputs:
+        # a distinct status lets a caller tell "the run broke" from "the output
+        # vCards are not valid VCards"
+        raise SystemExit(2)
 
 if __name__ == "__main__":
     main()
