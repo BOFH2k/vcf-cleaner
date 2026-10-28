@@ -16,9 +16,9 @@ python vcf-cleaner.py <input_dir> <output_dir> [options]
 - `--workers N` (default: 1): Process files in parallel with up to N threads. Only helps on very large inputs; per-file work is tiny and CPU-bound, so threading is opt-in.
 
 ## Testing
-The `test/` directory contains standalone test programs (each embeds its own inline VCard data and imports `vcf-cleaner.py`). Run them from the repo root, e.g.:
+The `test/` directory contains standard-library `unittest` tests with inline VCard data. Run the full suite from the repo root:
 ```bash
-python test/test_final_logic.py
+python -m unittest discover -s test -v
 ```
 
 To verify functionality against real-world data, use the sample VCard files in `example/` (they are local test data and are **not** tracked in git):
