@@ -179,6 +179,94 @@ class ImprovementRegressionTests(unittest.TestCase):
         self.assertIn("Files that failed:", result.stdout)
 
 
+class DryRunReportTests(unittest.TestCase):
+    """The dry-run report must name the rule that fired, not guess one."""
+
+    def run_dry_run(self, cards, *flags):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "input"
+            output = root / "output"
+            source.mkdir()
+            for name, content in cards.items():
+                (source / name).write_text(content, encoding="utf-8")
+
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), str(source), str(output),
+                 "--dry-run", *flags],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+    def test_report_names_the_n_rule_instead_of_blaming_dedup(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nN:;+49123456789;;;\nORG:Real Name\n"
+            "TEL:+49 123 456-789\nEND:VCARD"
+        )
+        result = self.run_dry_run({"phone-n.vcf": content},
+                                  "--no-dedup", "--no-strip-invisible")
+        self.assertIn("[N line removed]", result.stdout)
+        self.assertNotIn("Deduplication applied", result.stdout)
+
+    def test_report_names_the_fn_rewrite(self):
+        content = (
+            "BEGIN:VCARD\nFN:+49123456789\nORG:Sample Org\n"
+            "TEL:+49 123 456-789\nEND:VCARD"
+        )
+        result = self.run_dry_run({"fn-phone.vcf": content},
+                                  "--no-dedup", "--no-strip-invisible")
+        self.assertIn("[FN replaced by ORG]", result.stdout)
+        self.assertNotIn("Deduplication applied", result.stdout)
+
+    def test_report_counts_a_real_deduplication(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nORG:Real Name\nTEL:+49123456789\n"
+            "TEL:+49123456789\nEND:VCARD"
+        )
+        result = self.run_dry_run({"dup-line.vcf": content})
+        self.assertIn("[Duplicate lines removed]", result.stdout)
+
+    def test_report_names_the_invisible_character_rule(self):
+        content = (
+            "BEGIN:VCARD\nFN:Gu\u200best\nORG:Real Name\nEND:VCARD"
+        )
+        result = self.run_dry_run({"zwsp.vcf": content}, "--no-dedup")
+        self.assertIn("[Invisible characters removed]", result.stdout)
+        self.assertNotIn("Deduplication applied", result.stdout)
+
+    def test_blank_n_report_says_blanked_not_removed(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nN:;+49123456789;;;\nORG:Real Name\n"
+            "TEL:+49 123 456-789\nEND:VCARD"
+        )
+        result = self.run_dry_run({"phone-n.vcf": content}, "--blank-n",
+                                  "--no-dedup", "--no-strip-invisible")
+        self.assertIn("[N line blanked]", result.stdout)
+        self.assertNotIn("Deduplication applied", result.stdout)
+
+    def test_report_falls_back_to_rewrapping_when_only_the_layout_changed(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nORG:Real Name\n "
+            "extra\nEND:VCARD"
+        )
+        result = self.run_dry_run({"wrapped.vcf": content})
+        self.assertIn("[Line re-wrapping applied]", result.stdout)
+        self.assertNotIn("Deduplication applied", result.stdout)
+
+    def test_report_labels_every_rule_that_fired(self):
+        content = (
+            "BEGIN:VCARD\nFN:+49123456789\nN:;+49123456789;;;\n"
+            "ORG:Sample Org\nTEL:+49 123 456-789\nTEL:+49 123 456-789\n"
+            "END:VCARD"
+        )
+        result = self.run_dry_run({"all-rules.vcf": content})
+        for label in ("[FN replaced by ORG]", "[N line removed]",
+                      "[Duplicate lines removed]"):
+            self.assertIn(label, result.stdout)
+        self.assertNotIn("Deduplication applied", result.stdout)
+
+
 class ValidationTests(unittest.TestCase):
     """The --validate switch: structural rules and optional library tiers."""
 

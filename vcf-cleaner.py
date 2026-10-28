@@ -295,6 +295,50 @@ def apply_changes(lines, fields, replace_fn, remove_n, strip_inv, n_new_val=None
             new_lines.append(line)
     return new_lines
 
+def redundancy_decisions(lines, fields):
+    """Returns (replace_fn, remove_n, n_new_val) for the redundancy rules.
+
+    The three values are what apply_changes needs to rewrite the FN and N
+    lines: whether FN duplicates another field and should become ORG, whether
+    the N line is redundant and should be dropped, and the cleaned value to
+    keep when only part of N is redundant. Kept apart from the transform so
+    the dry-run report can name the rule that fired instead of guessing.
+    """
+    fn_val = fields["FN"][1]
+    replace_fn = False
+    if fn_val is not None:
+        need_phones = phone_like(fn_val) is not None
+        need_addr = address_like(fn_val) is not None
+        need_email = EMAIL_RE.search(fn_val) is not None
+        if need_phones or need_addr or need_email:
+            other_phones, other_contents, other_emails = precompute_other(
+                lines, fields["FN"][0], need_phones, need_addr, need_email)
+            redundant = (is_redundant_phone(fn_val, other_phones)
+                         or is_redundant_address(fn_val, other_contents)
+                         or is_redundant_email(fn_val, other_emails))
+            replace_fn = redundant and bool(fields["ORG"][1])
+
+    remove_n = is_n_redundant_with_adr(fields["N"][1], fields["ADR"][1])
+    n_new_val = None
+    if not remove_n and phone_like(fields["N"][1]) is not None:
+        # only collect TEL forms when N is phone-like at all, so files whose
+        # N holds a real name pay nothing
+        remove_n = is_n_redundant_with_tel(fields["N"][1], tel_phone_forms(lines))
+    n_val = fields["N"][1]
+    if not remove_n and n_val and "@" in n_val:
+        # gate on a plain '@': an e-mail that a name parser split into N's
+        # sub-fields no longer matches EMAIL_RE, but still contains one
+        email_values = email_value_forms(lines)
+        cleaned = strip_redundant_emails(n_val, email_values)
+        if cleaned is not None:
+            if not any(c.isalnum() for c in cleaned):
+                remove_n = True
+            else:
+                n_new_val = cleaned
+        elif is_n_only_split_email(n_val, email_token_forms(lines)):
+            remove_n = True
+    return replace_fn, remove_n, n_new_val
+
 def transform_vcard_content(vcard_text, strip_inv=True, dedup=True, blank_n=False):
     """
     Transforms a vCard based on redundancy logic and performs line-level deduplication.
@@ -326,54 +370,47 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True, blank_n=Fals
     (RFC 2426) mandates the N property and its ABNF allows all five sub-fields
     to be empty.
     """
+    transformed, _labels = transform_vcard_with_labels(
+        vcard_text, strip_inv=strip_inv, dedup=dedup, blank_n=blank_n)
+    return transformed
+
+def transform_vcard_with_labels(vcard_text, strip_inv=True, dedup=True, blank_n=False):
+    """Same transform as transform_vcard_content, plus the rules that fired.
+
+    Returns (transformed_text, labels) where labels names, in report order,
+    which rules actually changed something: 'FN replaced by ORG', 'N line
+    removed' or 'N line blanked' (with --blank-n), 'N line cleaned',
+    'invisible characters removed' and 'duplicate lines removed'. The dry-run
+    report prints these instead of labelling every non-FN change as a
+    deduplication, which blamed the wrong rule.
+    """
     lines = unfold_lines(vcard_text.split('\n'))
-    if strip_inv:
-        lines = [strip_invisible(line) for line in lines]
+    stripped = [strip_invisible(line) for line in lines] if strip_inv else lines
 
-    fields = parse_fields(lines)
-    fn_idx, fn_val = fields["FN"]
+    fields = parse_fields(stripped)
+    replace_fn, remove_n, n_new_val = redundancy_decisions(stripped, fields)
 
-    replace_fn = False
-    if fn_val is not None:
-        need_phones = phone_like(fn_val) is not None
-        need_addr = address_like(fn_val) is not None
-        need_email = EMAIL_RE.search(fn_val) is not None
-        if need_phones or need_addr or need_email:
-            other_phones, other_contents, other_emails = precompute_other(
-                lines, fn_idx, need_phones, need_addr, need_email)
-            redundant = (is_redundant_phone(fn_val, other_phones)
-                         or is_redundant_address(fn_val, other_contents)
-                         or is_redundant_email(fn_val, other_emails))
-            replace_fn = redundant and bool(fields["ORG"][1])
-
-    remove_n = is_n_redundant_with_adr(fields["N"][1], fields["ADR"][1])
-    n_new_val = None
-    if not remove_n and phone_like(fields["N"][1]) is not None:
-        # only collect TEL forms when N is phone-like at all, so files whose
-        # N holds a real name pay nothing
-        remove_n = is_n_redundant_with_tel(fields["N"][1], tel_phone_forms(lines))
-    n_val = fields["N"][1]
-    if not remove_n and n_val and "@" in n_val:
-        # gate on a plain '@': an e-mail that a name parser split into N's
-        # sub-fields no longer matches EMAIL_RE, but still contains one
-        email_values = email_value_forms(lines)
-        cleaned = strip_redundant_emails(n_val, email_values)
-        if cleaned is not None:
-            if not any(c.isalnum() for c in cleaned):
-                remove_n = True
-            else:
-                n_new_val = cleaned
-        elif is_n_only_split_email(n_val, email_token_forms(lines)):
-            remove_n = True
-
-    new_lines = apply_changes(lines, fields, replace_fn, remove_n, strip_inv,
+    new_lines = apply_changes(stripped, fields, replace_fn, remove_n, strip_inv,
                               n_new_val, blank_n)
 
+    labels = []
+    if replace_fn:
+        labels.append("FN replaced by ORG")
+    if remove_n:
+        labels.append("N line blanked" if blank_n else "N line removed")
+    if n_new_val is not None:
+        labels.append("N line cleaned")
+    if stripped != lines:
+        labels.append("invisible characters removed")
+
     if dedup:
-        new_lines = dedup_lines(new_lines)
+        deduped = dedup_lines(new_lines)
+        if deduped != new_lines:
+            labels.append("duplicate lines removed")
+        new_lines = deduped
 
     folded = [physical for line in new_lines for physical in fold_line(line)]
-    return "\n".join(folded)
+    return "\n".join(folded), labels
 
 PROPERTY_NAME_RE = re.compile(r'[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*)*')
 CONTROL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
@@ -500,8 +537,8 @@ def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup,
         with open(source_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        transformed_content = transform_vcard_content(content, strip_inv=strip_inv,
-                                                      dedup=dedup, blank_n=blank_n)
+        transformed_content, change_labels = transform_vcard_with_labels(
+            content, strip_inv=strip_inv, dedup=dedup, blank_n=blank_n)
 
         if transformed_content == content:
             return False, [], False, False
@@ -524,18 +561,14 @@ def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup,
             new_fn = extract_fn_value(transformed_content)
             fn_changed = (old_fn != new_fn)
 
-            content_lines = unfold_lines(content.split('\n'))
-            transformed_lines = unfold_lines(transformed_content.split('\n'))
-
-            def get_rest(lines): return [l for l in lines if get_property(l) != "FN"]
-            dedup_happened = (get_rest(content_lines) != get_rest(transformed_lines))
-
             report = [f"[CHANGE] {filename}"]
             if fn_changed:
                 report.append(f"         FN: '{old_fn}'  -->  '{new_fn}'")
-            if dedup_happened:
-                report.append("         [Deduplication applied]")
-            if not fn_changed and not dedup_happened:
+            # name the rules that actually fired; the old catch-all
+            # '[Deduplication applied]' blamed every non-FN change on dedup
+            for label in change_labels:
+                report.append(f"         [{label[0].upper()}{label[1:]}]")
+            if not change_labels and not fn_changed:
                 report.append("         [Line re-wrapping applied]")
             return True, report, False, False
 
