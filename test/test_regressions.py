@@ -59,6 +59,31 @@ class ImprovementRegressionTests(unittest.TestCase):
         )
         self.assertEqual(vcf_cleaner.transform_vcard_content(content), content)
 
+    def test_n_that_is_only_a_duplicated_email_is_removed(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nN:;;;(sample.family@example.com)\n"
+            "ORG:Real Name\nEMAIL:sample.family@example.com\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content)
+        self.assertNotIn("N:;", transformed)
+        self.assertIn("EMAIL:sample.family@example.com", transformed)
+
+    def test_n_keeps_its_name_when_only_the_email_part_duplicates(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nN:Sample;Family;;;(sample.family@example.com)\n"
+            "ORG:Real Name\nEMAIL:sample.family@example.com\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content)
+        self.assertIn("N:Sample;Family;;;", transformed)
+        self.assertIn("EMAIL:sample.family@example.com", transformed)
+
+    def test_n_email_without_a_matching_email_line_is_kept(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nN:Sample;Family;;;(sample.family@elsewhere.com)\n"
+            "ORG:Real Name\nEMAIL:sample.family@example.com\nEND:VCARD"
+        )
+        self.assertEqual(vcf_cleaner.transform_vcard_content(content), content)
+
     def test_file_processing_error_sets_nonzero_command_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

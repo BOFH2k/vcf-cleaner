@@ -9,6 +9,7 @@ EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 NONPHONE_RE = re.compile(r'[^\d+]')
 PHONE_RE = re.compile(r'^\+?\d+$')
 WS_RE = re.compile(r'\s+')
+EMPTY_PAREN_RE = re.compile(r'\(\s*\)')
 
 def normalize_phone(text):
     """
@@ -210,6 +211,29 @@ def tel_phone_forms(lines):
     return {normalize_phone(line.split(":", 1)[1])
             for line in lines if get_property(line) == "TEL"}
 
+def email_value_forms(lines):
+    """Lowercased e-mails found in every EMAIL value in the lines."""
+    return {e.lower()
+            for line in lines if get_property(line) == "EMAIL"
+            for e in EMAIL_RE.findall(line)}
+
+def strip_redundant_emails(value, email_values):
+    """Returns value with e-mails that duplicate an EMAIL line removed
+    (including now-empty parentheses), or None if nothing was removed."""
+    stripped = EMAIL_RE.sub(
+        lambda m: '' if m.group(0).lower() in email_values else m.group(0),
+        value)
+    if stripped == value:
+        return None
+    stripped = EMPTY_PAREN_RE.sub('', stripped)
+    return stripped
+
+def is_n_redundant_with_email(n_val, email_values):
+    """True if N holds an e-mail that duplicates an EMAIL value.
+    The e-mail itself may then be removed from N (the whole N line is
+    removed when nothing but the e-mail remains in N)."""
+    return any(e.lower() in email_values for e in EMAIL_RE.findall(n_val))
+
 def extract_fn_value(vcard_text):
     """Returns the FN value of a vCard (unfolded), for dry-run display."""
     for line in unfold_lines(vcard_text.splitlines()):
@@ -217,14 +241,22 @@ def extract_fn_value(vcard_text):
             return line.split(":", 1)[1].strip()
     return "Unknown"
 
-def apply_changes(lines, fields, replace_fn, remove_n, strip_inv):
-    """Returns the lines with FN replaced by ORG and/or N removed.
+def apply_changes(lines, fields, replace_fn, remove_n, strip_inv, n_new_val=None):
+    """Returns the lines with FN replaced by ORG and/or N removed or rewrites
+    to n_new_val (N line kept with its e-mail content cleaned out).
     A kept FN line's value is whitespace-normalized (its property prefix is kept)."""
     fn_idx = fields["FN"][0]
     n_idx = fields["N"][0]
     new_lines = []
     for i, line in enumerate(lines):
-        if i == n_idx and remove_n:
+        if i == n_idx:
+            if remove_n:
+                continue
+            if n_new_val is not None:
+                prop_part = line.split(":", 1)[0]
+                new_lines.append(f"{prop_part}:{n_new_val}")
+            else:
+                new_lines.append(line)
             continue
         if i == fn_idx:
             if replace_fn:
@@ -257,6 +289,8 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
     7. Is FN an e-mail address? If that address exists elsewhere in the vCard: Replace FN with ORG.
     8. Additionally, if N contains address info that matches ADR, remove N.
     9. If N holds nothing but a phone number that matches a TEL value, remove N.
+    10. If N holds an e-mail that matches an EMAIL value, remove that e-mail from
+        N (and the whole N line when nothing but the e-mail remains in it).
 
     Deduplication logic:
     Perform line-level deduplication (enabled by the dedup flag).
@@ -285,12 +319,21 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
             replace_fn = redundant and bool(fields["ORG"][1])
 
     remove_n = is_n_redundant_with_adr(fields["N"][1], fields["ADR"][1])
+    n_new_val = None
     if not remove_n and phone_like(fields["N"][1]) is not None:
         # only collect TEL forms when N is phone-like at all, so files whose
         # N holds a real name pay nothing
         remove_n = is_n_redundant_with_tel(fields["N"][1], tel_phone_forms(lines))
+    if not remove_n and EMAIL_RE.search(fields["N"][1] or ""):
+        cleaned = strip_redundant_emails(fields["N"][1], email_value_forms(lines))
+        if cleaned is not None:
+            if not any(c.isalnum() for c in cleaned):
+                remove_n = True
+            else:
+                n_new_val = cleaned
 
-    new_lines = apply_changes(lines, fields, replace_fn, remove_n, strip_inv)
+    new_lines = apply_changes(lines, fields, replace_fn, remove_n, strip_inv,
+                              n_new_val)
 
     if dedup:
         new_lines = dedup_lines(new_lines)
