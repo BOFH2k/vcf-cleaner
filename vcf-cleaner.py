@@ -228,11 +228,21 @@ def strip_redundant_emails(value, email_values):
     stripped = EMPTY_PAREN_RE.sub('', stripped)
     return stripped
 
-def is_n_redundant_with_email(n_val, email_values):
-    """True if N holds an e-mail that duplicates an EMAIL value.
-    The e-mail itself may then be removed from N (the whole N line is
-    removed when nothing but the e-mail remains in N)."""
-    return any(e.lower() in email_values for e in EMAIL_RE.findall(n_val))
+def email_token_forms(email_values):
+    """Order-independent token forms of the e-mail values in email_values."""
+    return {normalize_content(e) for e in email_values}
+
+def is_n_only_split_email(n_val, email_tokens):
+    """True if N holds nothing but the pieces of an e-mail that a name parser
+    split across its sub-fields, moving the domain ending to the front
+    (e.g. 'de;info@example;;;'). The tokens must match an e-mail value exactly,
+    so a real name is never removed even when an EMAIL repeats it
+    (N 'Merkle;Thomas;;;' vs EMAIL thomas.merkle@sva.de)."""
+    if "@" not in n_val:
+        return False
+    n_tokens = normalize_content(n_val)
+    return bool(n_tokens) and n_tokens in email_tokens
+
 
 def extract_fn_value(vcard_text):
     """Returns the FN value of a vCard (unfolded), for dry-run display."""
@@ -290,7 +300,9 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
     8. Additionally, if N contains address info that matches ADR, remove N.
     9. If N holds nothing but a phone number that matches a TEL value, remove N.
     10. If N holds an e-mail that matches an EMAIL value, remove that e-mail from
-        N (and the whole N line when nothing but the e-mail remains in it).
+        N (and the whole N line when nothing but the e-mail remains in it). This
+        also covers e-mails a name parser split into N's sub-fields, e.g.
+        'de;info@example;;;' for the EMAIL 'info@example.de'.
 
     Deduplication logic:
     Perform line-level deduplication (enabled by the dedup flag).
@@ -324,13 +336,19 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
         # only collect TEL forms when N is phone-like at all, so files whose
         # N holds a real name pay nothing
         remove_n = is_n_redundant_with_tel(fields["N"][1], tel_phone_forms(lines))
-    if not remove_n and EMAIL_RE.search(fields["N"][1] or ""):
-        cleaned = strip_redundant_emails(fields["N"][1], email_value_forms(lines))
+    n_val = fields["N"][1]
+    if not remove_n and n_val and "@" in n_val:
+        # gate on a plain '@': an e-mail that a name parser split into N's
+        # sub-fields no longer matches EMAIL_RE, but still contains one
+        email_values = email_value_forms(lines)
+        cleaned = strip_redundant_emails(n_val, email_values)
         if cleaned is not None:
             if not any(c.isalnum() for c in cleaned):
                 remove_n = True
             else:
                 n_new_val = cleaned
+        elif is_n_only_split_email(n_val, email_token_forms(email_values)):
+            remove_n = True
 
     new_lines = apply_changes(lines, fields, replace_fn, remove_n, strip_inv,
                               n_new_val)

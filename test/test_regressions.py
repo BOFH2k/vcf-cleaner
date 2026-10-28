@@ -84,6 +84,24 @@ class ImprovementRegressionTests(unittest.TestCase):
         )
         self.assertEqual(vcf_cleaner.transform_vcard_content(content), content)
 
+    def test_n_split_into_subfields_of_a_name_is_removed(self):
+        content = (
+            "BEGIN:VCARD\nFN:Kfz-Werkstatt\nORG:Sample Org\n"
+            "EMAIL;TYPE=WORK:info@sample-org.de\n"
+            "N:de;info@sample-org;;;\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content)
+        self.assertNotIn("N:de;", transformed)
+        self.assertIn("EMAIL;TYPE=WORK:info@sample-org.de", transformed)
+
+    def test_n_name_is_kept_even_when_an_email_repeats_it(self):
+        content = (
+            "BEGIN:VCARD\nFN:Sample\nORG:Sample Org\n"
+            "EMAIL:sample.family@example.com\n"
+            "N:Sample;Family;;;\nEND:VCARD"
+        )
+        self.assertEqual(vcf_cleaner.transform_vcard_content(content), content)
+
     def test_file_processing_error_sets_nonzero_command_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
