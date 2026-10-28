@@ -101,13 +101,13 @@ Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
 Run the standard-library test suite from the repository root:
 
 ```bash
-python -m unittest discover -s test -v
+python -m unittest discover -s unittests -v
 ```
 
 The tests that exercise the `vobject` and `icalendar` tiers are skipped when those libraries are not importable. Run them a second time with the venv interpreter to cover that code as well:
 
 ```bash
-.venv/bin/python -m unittest discover -s test -v
+.venv/bin/python -m unittest discover -s unittests -v
 ```
 
 This `.venv` is your own environment and is the only one these instructions describe. A coding agent working in this repository keeps its own, separate environment in `.venv-opencode`; the two are never shared, so please do not point one at the other or reuse it.

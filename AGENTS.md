@@ -32,7 +32,7 @@ There are two separate `uv` virtual environments and **they must never be shared
 Never run a command against `.venv`, never create or modify `.venv`, and never print its contents: it belongs to the user and only `README.md` describes it. Always use `.venv-opencode` for the bootstrap and for the library-tier test/`--validate` runs below. Both directories are gitignored.
 
 ### Validation bootstrap
-The script is standard-library only. The validator libraries are installed out-of-band in the agent venv `.venv-opencode` and imported lazily inside `validate_vcard`, never at module level (a top-level import would break `test/helpers.py`, which loads the script with `importlib`):
+The script is standard-library only. The validator libraries are installed out-of-band in the agent venv `.venv-opencode` and imported lazily inside `validate_vcard`, never at module level (a top-level import would break `unittests/helpers.py`, which loads the script with `importlib`):
 ```bash
 uv venv .venv-opencode --python 3.14
 uv pip install --python .venv-opencode vobject   # + icalendar for --validate-ical
@@ -41,9 +41,9 @@ uv pip install --python .venv-opencode vobject   # + icalendar for --validate-ic
 ```
 
 ## Testing
-The `test/` directory contains standard-library `unittest` tests with inline VCard data. Run the full suite from the repo root:
+The `unittests/` directory contains standard-library `unittest` tests with inline VCard data. Run the full suite from the repo root:
 ```bash
-python -m unittest discover -s test -v
+python -m unittest discover -s unittests -v
 ```
 
 To verify functionality against real-world data, use the sample VCard files in `example/` (they are local test data and are **not** tracked in git):
@@ -59,14 +59,14 @@ To verify functionality against real-world data, use the sample VCard files in `
 3. **Verification**: Compare the original files in `example/` with the processed files in `test_output/` to ensure `FN` fields have been correctly updated.
 4. **Validation**: with the agent venv interpreter (`.venv-opencode/bin/python`, never `.venv`), re-run with `--validate` (and `--validate-ical`) and confirm `Files with invalid output: 0`.
 
-The library-tier tests in `test/test_regressions.py` are skipped on an interpreter that lacks `vobject`/`icalendar`, so run the suite twice to cover everything:
+The library-tier tests in `unittests/test_regressions.py` are skipped on an interpreter that lacks `vobject`/`icalendar`, so run the suite twice to cover everything:
 ```bash
-python -m unittest discover -s test -v                  # library tiers skipped
-.venv-opencode/bin/python -m unittest discover -s test -v   # library tiers exercised (agent venv, never .venv)
+python -m unittest discover -s unittests -v                  # library tiers skipped
+.venv-opencode/bin/python -m unittest discover -s unittests -v   # library tiers exercised (agent venv, never .venv)
 ```
 
 ## Git and Environment
-To prevent accidental leakage of test data, the `example/` (sample VCards) and `test_output/` directories are explicitly ignored in `.gitignore`. The `test/` directory contains test programs and is tracked.
+To prevent accidental leakage of test data, the `example/` (sample VCards) and `test_output/` directories are explicitly ignored in `.gitignore`. The `unittests/` directory contains test programs and is tracked.
 
 Both virtual environments, `.venv` (the user's) and `.venv-opencode` (the agent's), are gitignored as well. Keep them separate: `.venv` is the user's environment and is documented only in `README.md`; as a coding agent, work only in `.venv-opencode` and do not adopt, convert or share `.venv`.
 
