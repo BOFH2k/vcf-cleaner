@@ -13,6 +13,7 @@ python vcf-cleaner.py <input_dir> <output_dir> [options]
 - `-d`, `--dry-run`: **Highly recommended.** Performs a simulation and prints what would be changed without writing any files.
 - `--[no-]strip-invisible` (default: on): Remove zero-width/invisible characters (e.g. U+200B ZWSP, BOM) that render like extra spaces. Disable with `--no-strip-invisible` to keep them.
 - `--[no-]dedup` (default: on): Remove duplicate lines. Disable with `--no-dedup` to keep them.
+- `--[no-]blank-n` (default: off): Keep a removed `N` line as the empty `N:;;;;` instead of dropping it (RFC 2426 mandates `N` and allows all-empty sub-fields).
 - `--workers N` (default: 1): Process files in parallel with up to N threads. Only helps on very large inputs; per-file work is tiny and CPU-bound, so threading is opt-in.
 - `--validate` (default: off): Check each resulting vCard (in a dry run, the one that would be written) and report invalid ones as `[INVALID OUTPUT] <file>` plus a `Files with invalid output:` count. Structural rules need no dependency; `vobject` is an optional second tier. Ask for it on an interpreter that cannot import `vobject` and the run prints the bootstrap below and exits `1`.
 - `--validate-ical` (default: off): Also ask `icalendar`, which is stricter than VCard 3.0 (`N`/`ADR` sub-field counts, single card per file), so it can flag cards a VCard 3.0 reader accepts. Opt-in extra tier; requires `--validate`.

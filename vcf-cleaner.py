@@ -259,9 +259,11 @@ def extract_fn_value(vcard_text):
             return line.split(":", 1)[1].strip()
     return "Unknown"
 
-def apply_changes(lines, fields, replace_fn, remove_n, strip_inv, n_new_val=None):
+def apply_changes(lines, fields, replace_fn, remove_n, strip_inv, n_new_val=None,
+                  blank_n=False):
     """Returns the lines with FN replaced by ORG and/or N removed or rewrites
-    to n_new_val (N line kept with its e-mail content cleaned out).
+    to n_new_val (N line kept with its e-mail content cleaned out). With
+    blank_n a removed N line is kept as the empty 'N:;;;;' instead.
     A kept FN line's value is whitespace-normalized (its property prefix is kept)."""
     fn_idx = fields["FN"][0]
     n_idx = fields["N"][0]
@@ -269,6 +271,9 @@ def apply_changes(lines, fields, replace_fn, remove_n, strip_inv, n_new_val=None
     for i, line in enumerate(lines):
         if i == n_idx:
             if remove_n:
+                if blank_n:
+                    prop_part = line.split(":", 1)[0]
+                    new_lines.append(f"{prop_part}:;;;;")
                 continue
             if n_new_val is not None:
                 prop_part = line.split(":", 1)[0]
@@ -290,7 +295,7 @@ def apply_changes(lines, fields, replace_fn, remove_n, strip_inv, n_new_val=None
             new_lines.append(line)
     return new_lines
 
-def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
+def transform_vcard_content(vcard_text, strip_inv=True, dedup=True, blank_n=False):
     """
     Transforms a vCard based on redundancy logic and performs line-level deduplication.
 
@@ -316,7 +321,10 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
     Perform line-level deduplication (enabled by the dedup flag).
 
     The strip_inv flag enables removal of zero-width/invisible characters;
-    the dedup flag enables line-level deduplication.
+    the dedup flag enables line-level deduplication. The blank_n flag keeps a
+    removed N line as the empty 'N:;;;;' instead of dropping it: VCard 3.0
+    (RFC 2426) mandates the N property and its ABNF allows all five sub-fields
+    to be empty.
     """
     lines = unfold_lines(vcard_text.split('\n'))
     if strip_inv:
@@ -359,7 +367,7 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True):
             remove_n = True
 
     new_lines = apply_changes(lines, fields, replace_fn, remove_n, strip_inv,
-                              n_new_val)
+                              n_new_val, blank_n)
 
     if dedup:
         new_lines = dedup_lines(new_lines)
@@ -484,7 +492,7 @@ def validate_vcard(text, validate_ical=False):
     return problems
 
 def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup,
-                validate=False, validate_ical=False):
+                validate=False, validate_ical=False, blank_n=False):
     """Reads one .vcf file, transforms it and (unless dry_run) writes it out.
     With validate it also checks the resulting vCard (see validate_vcard).
     Returns (changed, report_lines, failed, invalid)."""
@@ -492,7 +500,8 @@ def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup,
         with open(source_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        transformed_content = transform_vcard_content(content, strip_inv=strip_inv, dedup=dedup)
+        transformed_content = transform_vcard_content(content, strip_inv=strip_inv,
+                                                      dedup=dedup, blank_n=blank_n)
 
         if transformed_content == content:
             return False, [], False, False
@@ -537,7 +546,7 @@ def process_one(filename, source_path, dest_path, dry_run, strip_inv, dedup,
     except Exception as e:
         return False, [f"Error with file {filename}: {e}"], True, False
 
-def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_inv=True, dedup=True, workers=None, validate=False, validate_ical=False):
+def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_inv=True, dedup=True, workers=None, validate=False, validate_ical=False, blank_n=False):
     """Process a folder and return (ok, invalid_outputs).
 
     ok is False if setup or any file processing fails; invalid_outputs counts
@@ -592,11 +601,11 @@ def batch_process_vcards(source_folder, destination_folder, dry_run=True, strip_
         with ThreadPoolExecutor(max_workers=workers) as executor:
             results = [r for batch in executor.map(
                 lambda batch: [process_one(*t, dry_run, strip_inv, dedup,
-                                           validate, validate_ical)
+                                           validate, validate_ical, blank_n)
                                for t in batch], batches) for r in batch]
     else:
         results = [process_one(t[0], t[1], t[2], dry_run, strip_inv, dedup,
-                                validate, validate_ical) for t in tasks]
+                                validate, validate_ical, blank_n) for t in tasks]
 
     for changed, report, failed, invalid in results:
         for line in report:
@@ -651,6 +660,11 @@ def main():
                         help="Additionally ask icalendar when validating; it is stricter "
                              "than VCard 3.0 and can flag cards a 3.0 reader accepts "
                              "(default: off)")
+    parser.add_argument("--blank-n", action=argparse.BooleanOptionalAction, default=False,
+                        help="When a fully redundant N line would be dropped, keep it "
+                             "as the empty 'N:;;;;' instead of removing it: VCard 3.0 "
+                             "(RFC 2426) mandates the N property and its ABNF allows "
+                             "all five sub-fields to be empty (default: off)")
     args = parser.parse_args()
     if args.workers is not None and args.workers < 1:
         parser.error("--workers must be at least 1")
@@ -672,7 +686,7 @@ def main():
         args.input, args.output, dry_run=args.dry_run,
         strip_inv=args.strip_invisible, dedup=args.dedup,
         workers=args.workers, validate=args.validate,
-        validate_ical=args.validate_ical)
+        validate_ical=args.validate_ical, blank_n=args.blank_n)
     if not success:
         raise SystemExit(1)
     if invalid_outputs:

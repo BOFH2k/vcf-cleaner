@@ -113,6 +113,52 @@ class ImprovementRegressionTests(unittest.TestCase):
         self.assertNotIn("N:de;", transformed)
         self.assertIn("EMAIL:nöme@example.de", transformed)
 
+    def test_blank_n_keeps_a_removed_n_as_empty_subfields(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nN:;+49123456789;;;\n"
+            "ORG:Real Name\nTEL:+49 123 456-789\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content, blank_n=True)
+        self.assertIn("N:;;;;", transformed)
+        self.assertNotIn("+49123456789", transformed)
+        self.assertIn("TEL:+49 123 456-789", transformed)
+
+    def test_blank_n_blanks_a_split_email_n_too(self):
+        content = (
+            "BEGIN:VCARD\nFN:Kfz-Werkstatt\nORG:Sample Org\n"
+            "EMAIL;TYPE=WORK:info@sample-org.de\n"
+            "N:de;info@sample-org;;;\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content, blank_n=True)
+        self.assertIn("N:;;;;", transformed)
+        self.assertIn("EMAIL;TYPE=WORK:info@sample-org.de", transformed)
+
+    def test_blank_n_leaves_an_n_it_would_not_touch_alone(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nN:;+49123456789;;;\n"
+            "ORG:Real Name\nTEL:+49999999999\nEND:VCARD"
+        )
+        self.assertEqual(vcf_cleaner.transform_vcard_content(content, blank_n=True),
+                         content)
+
+    def test_blank_n_does_not_affect_a_partially_cleaned_n(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nN:Sample;Family;;;(sample.family@example.com)\n"
+            "ORG:Real Name\nEMAIL:sample.family@example.com\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content, blank_n=True)
+        self.assertIn("N:Sample;Family;;;", transformed)
+        self.assertNotIn("N:;;;;", transformed)
+
+    def test_default_keeps_the_n_line_dropped(self):
+        content = (
+            "BEGIN:VCARD\nFN:Guest\nN:;+49123456789;;;\n"
+            "ORG:Real Name\nTEL:+49 123 456-789\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content)
+        self.assertNotIn("N:;;;;", transformed)
+        self.assertNotIn("+49123456789", transformed)
+
     def test_file_processing_error_sets_nonzero_command_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
