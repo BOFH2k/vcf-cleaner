@@ -27,6 +27,8 @@ The optional `--validate` checker is the only part that is not standard library.
 ```bash
 uv venv .venv --python 3.14
 uv pip install --python .venv vobject
+# Only needed for the extra --validate-ical tier:
+uv pip install --python .venv icalendar
 ```
 
 ## Usage
@@ -50,7 +52,7 @@ python vcf-cleaner.py <input_dir> <output_dir> [options]
 - `--[no-]blank-n` (default: off): When a fully redundant `N` line would be dropped, keep it as the empty `N:;;;;` instead. VCard 3.0 (RFC 2426) mandates the `N` property and its ABNF allows all five sub-fields to be empty; VCard 4.0 only recommends `N`, so dropping it stays the information-preserving default.
 - `--workers N` (default: 1): Process files in parallel with up to N threads. Only helps on very large inputs; per-file work is tiny and CPU-bound, so threading is opt-in.
 - `--validate` (default: off): Check each resulting vCard and print the invalid ones under `[INVALID OUTPUT] <file>`, with one indented reason per problem, plus a `Files with invalid output:` count in the summary. Works in a dry run too (it checks what would be written). Needs the `vobject` library; run it with the interpreter that has it (see below).
-- `--validate-ical` (default: off): Also ask [icalendar](https://pypi.org/project/icalendar/), which is stricter than VCard 3.0 — it insists that `N` and `ADR` carry their full sub-field counts and that a file holds a single card — so it can flag cards that a VCard 3.0 reader accepts. It is an extra tier, not the gate, and requires `--validate`.
+- `--validate-ical` (default: off): Also ask [icalendar](https://pypi.org/project/icalendar/), which is stricter than VCard 3.0 — it insists that `N` and `ADR` carry their full sub-field counts and that a file holds a single card — so it can flag cards that a VCard 3.0 reader accepts. It is an extra tier, not the gate, requires `--validate`, and needs the `icalendar` library (see the bootstrap below).
 
 ### Validating the output
 
@@ -65,9 +67,11 @@ Run it with the interpreter that can import the checker — either the venv you 
 ```bash
 .venv/bin/python vcf-cleaner.py ./contacts_raw ./contacts_cleaned --validate
 uv run --with vobject vcf-cleaner.py ./contacts_raw ./contacts_cleaned --validate
+# Add --with icalendar (and --validate-ical) for the stricter third tier:
+uv run --with vobject --with icalendar vcf-cleaner.py ./contacts_raw ./contacts_cleaned --validate --validate-ical
 ```
 
-If you ask for `--validate` on an interpreter that cannot import `vobject`, the command does not quietly skip the check: it prints the exact setup instructions and exits with status `1`. The validation function itself keeps the library import optional, so calling it from another script on a plain interpreter still runs every rule that needs no dependency.
+If you ask for `--validate` on an interpreter that cannot import `vobject`, or for `--validate-ical` on one that cannot import `icalendar`, the command does not quietly skip the check: it prints the exact setup instructions and exits with status `1`. The validation function itself keeps the library import optional, so calling it from another script on a plain interpreter still runs every rule that needs no dependency.
 
 ### Exit codes
 

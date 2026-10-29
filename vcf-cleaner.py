@@ -469,11 +469,14 @@ checker lives in a uv-managed venv instead:
 
     uv venv .venv --python 3.14
     uv pip install --python .venv vobject
-    .venv/bin/python vcf-cleaner.py IN OUT --validate
+    # --validate-ical additionally needs icalendar:
+    uv pip install --python .venv icalendar
+    .venv/bin/python vcf-cleaner.py IN OUT --validate [--validate-ical]
 
 or run it in one go:
 
     uv run --with vobject vcf-cleaner.py IN OUT --validate
+    uv run --with vobject --with icalendar vcf-cleaner.py IN OUT --validate --validate-ical
 """
 
 def validate_vcard(text, validate_ical=False):
