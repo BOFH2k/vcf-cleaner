@@ -11,6 +11,8 @@ NONPHONE_RE = re.compile(r'[^\d+]')
 PHONE_RE = re.compile(r'^\+?\d+$')
 WS_RE = re.compile(r'\s+')
 EMPTY_PAREN_RE = re.compile(r'\(\s*\)')
+URL_SCHEMES = ('http://', 'https://', 'ftp://', 'www.')
+DOMAIN_TLD_RE = re.compile(r'[a-z0-9](?:[a-z0-9._+-]*[a-z0-9])?\.[a-z]{2,}$')
 
 def normalize_phone(text):
     """
@@ -251,6 +253,39 @@ def is_n_only_split_email(n_val, email_tokens):
     n_tokens = normalize_content(n_val)
     return bool(n_tokens) and n_tokens in email_tokens
 
+def url_token_forms(lines, skip_idx):
+    """Order-independent token forms of every URL-valued line (URL: or any
+    other property whose whole value looks like an address on the web).
+
+    Bare domains (www.example.de and example.de) and http/ftp URLs count;
+    values containing '@' are e-mail values and belong to the e-mail rules.
+    The N line itself (skip_idx) never provides a form, so an N that repeats
+    only itself is not dropped by this rule.
+    """
+    forms = set()
+    for i, line in enumerate(lines):
+        if i == skip_idx or ":" not in line:
+            continue
+        value = line.split(":", 1)[1].strip()
+        lv = value.lower()
+        if not lv or "@" in lv:
+            continue
+        if lv.startswith(URL_SCHEMES) or DOMAIN_TLD_RE.fullmatch(lv):
+            forms.add(normalize_content(value))
+    return forms
+
+def is_n_only_split_url(n_val, url_tokens):
+    """True if N holds nothing but the pieces of an Internet address that a
+    name parser split across its sub-fields (e.g. 'de;www;sample-org.;;' for
+    'www.sample-org.de'). Gated on 'www'/'http' in N mirroring the '@' gate of
+    the split e-mail rule, and the tokens must match a URL-valued line exactly,
+    so a real name is never removed even next to a URL field."""
+    lv = n_val.lower()
+    if 'www' not in lv and 'http' not in lv:
+        return False
+    n_tokens = normalize_content(n_val)
+    return bool(n_tokens) and n_tokens in url_tokens
+
 
 def extract_fn_value(vcard_text):
     """Returns the FN value of a vCard (unfolded), for dry-run display."""
@@ -337,6 +372,14 @@ def redundancy_decisions(lines, fields):
                 n_new_val = cleaned
         elif is_n_only_split_email(n_val, email_token_forms(lines)):
             remove_n = True
+    if not remove_n and not replace_fn and n_val:
+        lv = n_val.lower()
+        if 'www' in lv or 'http' in lv:
+            # same gate shape as the '@' above: an Internet address that a
+            # name parser split into N's sub-fields no longer reads as a URL,
+            # but still spells www or http somewhere
+            if is_n_only_split_url(n_val, url_token_forms(lines, fields["N"][0])):
+                remove_n = True
     return replace_fn, remove_n, n_new_val
 
 def transform_vcard_content(vcard_text, strip_inv=True, dedup=True, blank_n=False):
@@ -360,6 +403,10 @@ def transform_vcard_content(vcard_text, strip_inv=True, dedup=True, blank_n=Fals
         N (and the whole N line when nothing but the e-mail remains in it); the
         e-mail may also have been split into N's sub-fields by a name parser,
         e.g. 'de;info@example;;;' for the EMAIL 'info@example.de'.
+    11. If N holds nothing but an Internet address that a name parser split
+        into its sub-fields (e.g. 'de;www;sample-org.;;'), remove N when the
+        same address is spelled as the value of another field that looks like
+        a URL (a URL property or e.g. an EMAIL holding 'www.sample-org.de').
 
     Deduplication logic:
     Perform line-level deduplication (enabled by the dedup flag).

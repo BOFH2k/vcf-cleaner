@@ -113,6 +113,43 @@ class ImprovementRegressionTests(unittest.TestCase):
         self.assertNotIn("N:de;", transformed)
         self.assertIn("EMAIL:nöme@example.de", transformed)
 
+    def test_n_that_is_only_a_split_url_in_an_email_field_is_removed(self):
+        content = (
+            "BEGIN:VCARD\nFN:Sample\nORG:Sample Org\n"
+            "EMAIL;TYPE=PREF,X-INTERNET:www.sample-org.de\n"
+            "N:de;www;sample-org.;;;\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content)
+        self.assertNotIn("N:de;", transformed)
+        self.assertIn("EMAIL;TYPE=PREF,X-INTERNET:www.sample-org.de",
+                      transformed)
+
+    def test_n_that_is_only_a_split_url_in_a_url_field_is_removed(self):
+        content = (
+            "BEGIN:VCARD\nFN:Sample\nORG:Sample Org\n"
+            "URL:http://sample-org.de\n"
+            "N:de;http;sample-org.;;;\nEND:VCARD"
+        )
+        transformed = vcf_cleaner.transform_vcard_content(content)
+        self.assertNotIn("N:de;", transformed)
+        self.assertIn("URL:http://sample-org.de", transformed)
+
+    def test_n_repeating_only_its_own_url_pieces_is_kept(self):
+        content = (
+            "BEGIN:VCARD\nFN:Sample\nORG:Sample Org\n"
+            "EMAIL:info@sample-org.de\n"
+            "N:de;www;sample-org.;;;\nEND:VCARD"
+        )
+        self.assertEqual(vcf_cleaner.transform_vcard_content(content), content)
+
+    def test_n_holding_a_real_name_is_kept_next_to_a_url_field(self):
+        content = (
+            "BEGIN:VCARD\nFN:Sample\nORG:Sample Org\n"
+            "URL:http://sample-org.de\n"
+            "N:Mustermann;Thomas;;;\nEND:VCARD"
+        )
+        self.assertEqual(vcf_cleaner.transform_vcard_content(content), content)
+
     def test_blank_n_keeps_a_removed_n_as_empty_subfields(self):
         content = (
             "BEGIN:VCARD\nFN:Guest\nN:;+49123456789;;;\n"
