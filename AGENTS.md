@@ -72,6 +72,9 @@ Both virtual environments, `.venv` (the user's) and `.venv-opencode` (the agent'
 
 **Never quote or copy data from `example/` into anything that is tracked: not into code comments, not into tests (use generic synthetic vCards such as `Sample Org` / `+49123456789`), and not into commit messages, PR text, or issue reports.** The same applies to data derived from those files, such as personal names, addresses, e-mail values, and real phone numbers. Probes and scratch scripts that read `example/` must print counts only, never content, and stay untracked (use `/tmp/opencode`).
 
+### No pushes
+This environment has **no git credentials**, so pushing is impossible: never run `git push`, `git push --force`, or a force-push variant, and never configure or probe a remote's credentials, tokens or SSH setup. Commit locally and report how far `main` is ahead of `origin/main` (e.g. `git log --oneline origin/main..main`); if the user asks to push, tell them the commits are ready and left local for them to push from their own machine.
+
 ## Notes
 - The dry-run report names the rule that actually fired for each changed file (`[FN replaced by ORG]`, `[N line removed]` / `[N line blanked]`, `[N line cleaned]`, `[Invisible characters removed]`, `[Duplicate lines removed]`, falling back to `[Line re-wrapping applied]`). `transform_vcard_content` keeps its public signature and delegates to `transform_vcard_with_labels`, which also returns those labels; the redundancy rules themselves live in `redundancy_decisions`.
 - No external dependencies are required (uses standard library). The optional `--validate` checker (`vobject`, and `icalendar` for `--validate-ical`) is the only exception, and it is installed out-of-band in the agent venv `.venv-opencode` rather than imported by the script.
